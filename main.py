@@ -3,12 +3,12 @@ import numpy as np
 import sys
 import mmap
 import time
-from multiprocessing import Process, Lock
+from multiprocessing import Process, Lock, Manager
 
-calculations = {}
 
-def process(split, l):
-    global calculations
+
+def process(split, l, calculations):
+    #print(len(split))
     indx = 0
     split_map = {}
     while indx < len(split):
@@ -22,6 +22,7 @@ def process(split, l):
         else:
             split_map[city_name] = np.append(split_map[city_name], value)
     l.acquire()
+    #print(f"built internal map {split_map}")
     for key, val in split_map.items():
         if key in calculations:
             current = calculations[key]
@@ -29,8 +30,10 @@ def process(split, l):
             calculations[key][1] += np.sum(val)
             calculations[key][2] = max(current[2], np.max(val))
             calculations[key][3] += float(val.size)
+            #print(f"updating key {calculations[key]}")
         else:    
             calculations[key] = np.array([np.min(val), np.sum(val), np.max(val), float(val.size)])
+            #print(f"adding key {calculations[key]}")
     l.release()
 
 def find_sep(mm, start:int =0, sep: bytes=b';'):
@@ -39,25 +42,41 @@ def find_sep(mm, start:int =0, sep: bytes=b';'):
             return start
         else:
             start += 1
-    return -1
+    return len(mm)
 
 def main():
-    global calculations
-    start = time.time()
+    start_time = time.time()
     file_name: LiteralString = f"measurements.txt"
     if len(sys.argv) > 1:
         file_name = sys.argv[1]
     with open(file_name, "r", encoding="utf-8") as f:
         mm: np.memmap = np.memmap(file_name, mode="r", dtype='S1')
         lock = Lock()
-        process(mm, lock)
+        NUM_PROCESS = 15
+        processes = []
+        start = 0
+        data_split = len(mm)//NUM_PROCESS
+        calculations = Manager().dict()
+        for i in range(NUM_PROCESS):
+            start_end = (i + 1) * data_split
+            end = find_sep(mm, start_end, b'\n')
+            #print(f"adding process with {start},{end}")
+            processes.append(Process(target=process, args=(mm[start:end],lock, calculations)))
+            processes[i].start()
+            start = end + 1
+            if (start >= len(mm)):
+                break
+        for p in processes:
+            p.join()
+            
+
         sys.stdout.write("{")
         for key, val in calculations.items():
             sys.stdout.write(f"{key}={val[0]:.2f}/{val[1]/val[3]:.2f}/{val[2]:.2f},")
         sys.stdout.write("}\n")
 
-    end = time.time()
-    sys.stdout.write(f"{end-start}s Total execution time")
+    end_time = time.time()
+    sys.stdout.write(f"{end_time-start_time}s Total execution time")
     sys.stdout.flush()
     
 
